@@ -1,45 +1,48 @@
 # cxtools
 
-An MCP (Model Context Protocol) server that exposes Codex-style tools, backed by the [OpenAI Codex CLI](https://github.com/openai/codex) (`@openai/codex`).
+An MCP (Model Context Protocol) server that exposes [OpenAI Codex](https://github.com/openai/codex) tools by calling the codex-rs crates **in-process** — not a reimplementation.
 
-Instead of reimplementing agent tooling, cxtools delegates to the Codex binary bundled with the npm package: patches are applied with Codex's own `apply_patch` implementation, and web search / subagent tasks run through `codex exec`.
+cxtools depends on the codex-rs workspace crates as git dependencies (pinned to [mkusaka/codex](https://github.com/mkusaka/codex), a fork that only adjusts the workspace version for downstream consumption). `shell_command` and `apply_patch` run the exact functions Codex itself runs. Tool names, descriptions, and parameters follow the specs Codex presents to its model (`codex-rs/core/src/tools/handlers/*_spec.rs`).
 
 ## Tools
 
-| Tool | Description | Backed by |
+| Tool | Backed by | Fidelity |
 | --- | --- | --- |
-| `shell` | Run a shell command and return stdout/stderr and the exit code | `bash -lc` |
-| `apply_patch` | Create, edit, or delete files by applying a patch in Codex `apply_patch` format | `codex --codex-run-as-apply-patch` |
-| `read_file` | Read a text file and return its contents | `node:fs` |
-| `view_image` | Return a local image (png/jpg/gif/webp) as MCP image content | `node:fs` + base64 |
-| `web_search` | Search the web via a Codex agent and return findings with source URLs | `codex exec -c web_search=live` |
-| `subagent` | Delegate a task to a non-interactive Codex agent and return its final message | `codex exec --ephemeral` |
+| `shell_command` | `codex_core::exec::process_exec_tool_call` | Codex's own execution path: default 10s timeout, output caps/truncation |
+| `apply_patch` | `codex_apply_patch::apply_patch` | Codex's own patch parser/applier |
+| `view_image` | `tokio::fs` + base64, returned as MCP image content | Equivalent (Codex reads the file and attaches it the same way) |
+| `subagent` | `codex exec --ephemeral` (Codex CLI on PATH) | Delegation — Codex's internal multi-agent tooling is not extractable |
 
 ### Tool inputs
 
-- `shell`: `command` (required), `cwd` (optional)
-- `apply_patch`: `patch` (required, `*** Begin Patch` ... `*** End Patch` format), `cwd` (optional)
-- `read_file`: `path` (required)
-- `view_image`: `path` (required)
-- `web_search`: `query` (required)
+- `shell_command`: `command` (required), `workdir` (optional), `timeout_ms` (optional, defaults to 10000 ms)
+- `apply_patch`: `input` (required, `*** Begin Patch` ... `*** End Patch` format), `cwd` (optional, cxtools extension)
+- `view_image`: `path` (required, png/jpg/gif/webp)
 - `subagent`: `prompt` (required), `cwd` (optional)
+
+### Deliberately not exposed
+
+- **`web_search`** — in Codex this is a hosted tool: the Responses API executes it server-side. There is no local implementation to export.
+- **Sandboxing / approvals** — `shell_command` runs unsandboxed (`PermissionProfile::Disabled`); command approval is the MCP client's responsibility.
 
 ## Requirements
 
-- Node.js >= 20 (>= 22.18 to run the TypeScript sources directly)
-- A Codex CLI login (`codex login`) for `web_search` and `subagent` — they consume your Codex usage
+- Rust (see `codex-rs`'s minimum; 1.95+)
+- For `subagent`: a logged-in Codex CLI (`codex login`) on PATH
 
 ## Setup
 
 ```bash
-pnpm install
-pnpm build
+cargo build --release
+# or install to ~/.cargo/bin (--locked is required: a fresh resolution
+# drifts rama-* crates away from the versions codex's lockfile pins)
+cargo install --path . --locked
 ```
 
 Register as a stdio MCP server. For Claude Code:
 
 ```bash
-claude mcp add cxtools -- node /path/to/cxtools/dist/index.js
+claude mcp add cxtools -- /path/to/cxtools/target/release/cxtools
 ```
 
 Or in an `mcpServers` config:
@@ -48,26 +51,23 @@ Or in an `mcpServers` config:
 {
   "mcpServers": {
     "cxtools": {
-      "command": "node",
-      "args": ["/path/to/cxtools/dist/index.js"]
+      "command": "/path/to/cxtools/target/release/cxtools"
     }
   }
 }
 ```
 
-On Node.js >= 22.18 you can skip the build and point at the TypeScript entry directly: `node /path/to/cxtools/src/index.ts`.
-
 ## Development
 
 ```bash
-pnpm test       # vitest
-pnpm lint       # oxlint
-pnpm fmt        # oxfmt
-pnpm fmt:check  # oxfmt --check
-pnpm build      # tsc -> dist/
+cargo test
+cargo clippy --all-targets
+cargo fmt
 ```
 
-Tests exercise the server end-to-end over an in-memory MCP transport, including a real `apply_patch` round-trip through the Codex binary. `web_search` and `subagent` are not covered by tests because they require a Codex login.
+### Updating the pinned codex revision
+
+Bump the `rev` on every `codex-*` dependency in `Cargo.toml` (all must point at the same commit), and mirror any changes to the `[patch.crates-io]` section from `codex-rs/Cargo.toml` at that revision. These are unpublished internal crates — expect API churn on upgrade.
 
 ## License
 

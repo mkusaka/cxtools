@@ -1,0 +1,27 @@
+[package]
+name = "cxtools"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "MCP server exposing Codex tools by calling the codex-rs crates in-process."
+
+[dependencies]
+anyhow = "1"
+codex-apply-patch = { git = "https://github.com/mkusaka/codex", rev = "39979b59a55ccc52b90b39810f2f355f6498084e" }
+codex-core = { git = "https://github.com/mkusaka/codex", rev = "39979b59a55ccc52b90b39810f2f355f6498084e" }
+codex-exec-server = { git = "https://github.com/mkusaka/codex", rev = "39979b59a55ccc52b90b39810f2f355f6498084e" }
+codex-protocol = { git = "https://github.com/mkusaka/codex", rev = "39979b59a55ccc52b90b39810f2f355f6498084e" }
+codex-utils-absolute-path = { git = "https://github.com/mkusaka/codex", rev = "39979b59a55ccc52b90b39810f2f355f6498084e" }
+codex-utils-path-uri = { git = "https://github.com/mkusaka/codex", rev = "39979b59a55ccc52b90b39810f2f355f6498084e" }
+rmcp = { version = "=3.0.0-beta.3", features = ["server", "macros", "schemars", "transport-io"] }
+base64 = "0.22"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-std"] }
+
+# Replicate the patches from codex-rs' workspace; cargo does not inherit
+# [patch] sections from git dependencies.
+[patch.crates-io]
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
