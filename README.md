@@ -42,6 +42,23 @@ These shapes are cxtools additions, not copied from Codex — the specs these to
 
 ## Setup
 
+Install via Homebrew:
+
+```bash
+brew tap mkusaka/tap
+brew install mkusaka/tap/cxtools
+```
+
+Tagged releases publish Homebrew bottles for Apple Silicon and Intel Macs on
+macOS Sequoia 15 and Tahoe 26. Until the first tagged release is published,
+or on unsupported platforms, install from `HEAD`:
+
+```bash
+brew install --HEAD mkusaka/tap/cxtools
+```
+
+Or build from source:
+
 ```bash
 cargo build --release
 # or install to ~/.cargo/bin (--locked is required: a fresh resolution
@@ -49,10 +66,12 @@ cargo build --release
 cargo install --path . --locked
 ```
 
-Register as a stdio MCP server. For Claude Code:
+Register as a stdio MCP server. For Claude Code (if installed via Homebrew or
+`cargo install`, `cxtools` is already on `PATH`; otherwise use the full path
+to `target/release/cxtools`):
 
 ```bash
-claude mcp add cxtools -- /path/to/cxtools/target/release/cxtools
+claude mcp add cxtools -- cxtools
 ```
 
 Or in an `mcpServers` config:
