@@ -13,6 +13,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
+use rmcp::handler::server::tool::schema_for_output;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::model::ContentBlock;
@@ -23,6 +24,7 @@ use rmcp::tool;
 use rmcp::tool_handler;
 use rmcp::tool_router;
 use serde::Deserialize;
+use serde::Serialize;
 
 fn text_result(text: impl Into<String>, is_error: bool) -> CallToolResult {
     let content = vec![ContentBlock::text(text.into())];
@@ -31,6 +33,20 @@ fn text_result(text: impl Into<String>, is_error: bool) -> CallToolResult {
     } else {
         CallToolResult::success(content)
     }
+}
+
+/// Builds a `CallToolResult` carrying both the human-readable text content
+/// (for older/simpler clients) and `structured_content` matching `output`'s
+/// `outputSchema` (for clients that read it programmatically).
+fn structured_result<T: Serialize>(
+    output: &T,
+    text: impl Into<String>,
+    is_error: bool,
+) -> CallToolResult {
+    let mut result = CallToolResult::structured(serde_json::to_value(output).unwrap_or_default());
+    result.content = vec![ContentBlock::text(text.into())];
+    result.is_error = Some(is_error);
+    result
 }
 
 fn resolve_cwd(dir: Option<&str>) -> std::io::Result<AbsolutePathBuf> {
@@ -77,11 +93,42 @@ pub struct SubagentParams {
     pub cwd: Option<String>,
 }
 
+// Output shapes (cxtools additions; the codex specs these tools mirror do not
+// define output_schema for shell_command/apply_patch, but MCP clients that
+// want to consume results programmatically benefit from one). Field names
+// mirror `codex_protocol::exec_output::ExecToolCallOutput` where applicable.
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ShellCommandOutput {
+    /// Combined stdout+stderr, possibly truncated.
+    pub output: String,
+    /// Process exit code.
+    pub exit_code: i32,
+    /// True if the command was killed for exceeding `timeout_ms`.
+    pub timed_out: bool,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ApplyPatchOutput {
+    /// True if every hunk in the patch applied successfully.
+    pub success: bool,
+    /// Combined stdout+stderr from the patch applier.
+    pub output: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct SubagentOutput {
+    /// True if the delegated `codex exec` run exited successfully.
+    pub success: bool,
+    /// The subagent's final message (or raw stdout/stderr on failure).
+    pub output: String,
+}
+
 // #[tool_handler] routes through Self::tool_router(), so no router field is needed.
 #[derive(Default)]
 pub struct CxTools;
 
-#[tool_router]
+#[tool_router(vis = "pub")]
 impl CxTools {
     pub fn new() -> Self {
         Self
@@ -89,7 +136,8 @@ impl CxTools {
 
     #[tool(
         name = "shell_command",
-        description = "Runs a shell command and returns its output.\n- Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary."
+        description = "Runs a shell command and returns its output.\n- Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary.",
+        output_schema = "schema_for_output::<ShellCommandOutput>()"
     )]
     pub async fn shell_command(
         &self,
@@ -132,15 +180,30 @@ impl CxTools {
                 if output.exit_code != 0 {
                     text = format!("{text}\n(exit code {})", output.exit_code);
                 }
-                Ok(text_result(text, output.exit_code != 0))
+                let is_error = output.exit_code != 0 || output.timed_out;
+                let structured = ShellCommandOutput {
+                    output: output.aggregated_output.text,
+                    exit_code: output.exit_code,
+                    timed_out: output.timed_out,
+                };
+                Ok(structured_result(&structured, text, is_error))
             }
-            Err(e) => Ok(text_result(format!("exec error: {e}"), true)),
+            Err(e) => Ok(structured_result(
+                &ShellCommandOutput {
+                    output: e.to_string(),
+                    exit_code: -1,
+                    timed_out: false,
+                },
+                format!("exec error: {e}"),
+                true,
+            )),
         }
     }
 
     #[tool(
         name = "apply_patch",
-        description = "The `apply_patch` tool can be used to edit files. Provide the patch in the apply_patch format (*** Begin Patch / *** Add File: / *** Update File: / *** Delete File: / *** End Patch)."
+        description = "The `apply_patch` tool can be used to edit files. Provide the patch in the apply_patch format (*** Begin Patch / *** Add File: / *** Update File: / *** Delete File: / *** End Patch).",
+        output_schema = "schema_for_output::<ApplyPatchOutput>()"
     )]
     pub async fn apply_patch(
         &self,
@@ -164,18 +227,21 @@ impl CxTools {
         .await;
         let stdout = String::from_utf8_lossy(&stdout);
         let stderr = String::from_utf8_lossy(&stderr);
-        match result {
-            Ok(_) => Ok(text_result(stdout, false)),
-            Err(_) => Ok(text_result(
-                [stdout.as_ref(), stderr.as_ref()]
-                    .iter()
-                    .filter(|s| !s.is_empty())
-                    .copied()
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                true,
-            )),
-        }
+        let combined = [stdout.as_ref(), stderr.as_ref()]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let success = result.is_ok();
+        Ok(structured_result(
+            &ApplyPatchOutput {
+                success,
+                output: combined.clone(),
+            },
+            combined,
+            !success,
+        ))
     }
 
     #[tool(
@@ -216,7 +282,8 @@ impl CxTools {
 
     #[tool(
         name = "subagent",
-        description = "Delegate a task (research, investigation, implementation, ...) to a non-interactive Codex agent (`codex exec`) and return its final message. Requires a logged-in Codex CLI on PATH."
+        description = "Delegate a task (research, investigation, implementation, ...) to a non-interactive Codex agent (`codex exec`) and return its final message. Requires a logged-in Codex CLI on PATH.",
+        output_schema = "schema_for_output::<SubagentOutput>()"
     )]
     pub async fn subagent(
         &self,
@@ -253,17 +320,41 @@ impl CxTools {
                 } else {
                     last_message
                 };
-                Ok(text_result(text, false))
+                Ok(structured_result(
+                    &SubagentOutput {
+                        success: true,
+                        output: text.clone(),
+                    },
+                    text,
+                    false,
+                ))
             }
-            Ok(output) => Ok(text_result(
-                format!(
+            Ok(output) => {
+                let text = format!(
                     "codex exec failed (exit code {:?}):\n{}",
                     output.status.code(),
                     String::from_utf8_lossy(&output.stderr)
-                ),
-                true,
-            )),
-            Err(e) => Ok(text_result(format!("failed to launch codex: {e}"), true)),
+                );
+                Ok(structured_result(
+                    &SubagentOutput {
+                        success: false,
+                        output: text.clone(),
+                    },
+                    text,
+                    true,
+                ))
+            }
+            Err(e) => {
+                let text = format!("failed to launch codex: {e}");
+                Ok(structured_result(
+                    &SubagentOutput {
+                        success: false,
+                        output: text.clone(),
+                    },
+                    text,
+                    true,
+                ))
+            }
         }
     }
 }

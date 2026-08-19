@@ -25,6 +25,22 @@ async fn shell_command_runs_and_captures_output() {
         .unwrap();
     assert_eq!(result.is_error, Some(false));
     assert!(text_of(&result).contains("hello"));
+
+    let structured = result.structured_content.expect("structured_content set");
+    assert_eq!(structured["exit_code"], 0);
+    assert_eq!(structured["timed_out"], false);
+    assert!(structured["output"].as_str().unwrap().contains("hello"));
+}
+
+#[tokio::test]
+async fn shell_command_advertises_output_schema() {
+    let router = CxTools::tool_router();
+    let tool = router
+        .list_all()
+        .into_iter()
+        .find(|t| t.name == "shell_command")
+        .expect("shell_command tool registered");
+    assert!(tool.output_schema.is_some());
 }
 
 #[tokio::test]

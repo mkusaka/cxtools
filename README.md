@@ -20,6 +20,16 @@ cxtools depends on the codex-rs workspace crates as git dependencies (pinned to 
 - `view_image`: `path` (required, png/jpg/gif/webp)
 - `subagent`: `prompt` (required), `cwd` (optional)
 
+### Output schemas
+
+`shell_command`, `apply_patch`, and `subagent` declare an `outputSchema` and return matching `structuredContent` (in addition to the usual text content, for clients that don't read structured output):
+
+- `shell_command` → `{ output: string, exit_code: number, timed_out: boolean }`
+- `apply_patch` → `{ success: boolean, output: string }`
+- `subagent` → `{ success: boolean, output: string }`
+
+These shapes are cxtools additions, not copied from Codex — the specs these tools otherwise mirror (`shell_spec.rs`, `apply_patch_spec.rs`) leave `output_schema: None` for them. `view_image` has no output schema: it returns binary image content, which `structuredContent` (JSON-only) can't carry.
+
 ### Deliberately not exposed
 
 - **`web_search`** — in Codex this is a hosted tool: the Responses API executes it server-side. There is no local implementation to export.
