@@ -250,6 +250,7 @@ jobs:
           gh api repos/mkusaka/homebrew-tap/dispatches \
             -f event_type=update-formula \
             -f "client_payload[formula]=cxtools" \
+            -f "client_payload[repository]=$GITHUB_REPOSITORY" \
             -f "client_payload[version]=$VERSION" \
             -f "client_payload[source_sha256]=$SOURCE_SHA256" \
             -f "client_payload[arm64_tahoe_sha256]=$ARM64_TAHOE_SHA256" \
